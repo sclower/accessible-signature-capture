@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="description" content="An accessible, private, browser-based signature capture tool with keyboard-controlled touchpad drawing.">
+<title>Accessible Signature Capture</title>
+<style>
+  :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { max-width: 900px; margin: 0 auto; padding: 1rem; line-height: 1.45; }
+  h1 { font-size: 1.6rem; }
+  #status { padding: .75rem; border: 2px solid currentColor; margin: 1rem 0; font-weight: 600; }
+  #signature {
+    display: block;
+    width: 100%;
+    height: 420px;
+    border: 4px solid currentColor;
+    box-sizing: border-box;
+    background: white;
+    touch-action: none;
+  }
+  #signature:focus { outline: 4px solid Highlight; outline-offset: 3px; }
+  .controls { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+  button { font: inherit; padding: .7rem 1rem; }
+  .help { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Accessible Signature Capture</h1>
+
+  <p>
+    A simple signature-capture tool designed to be usable without sight. You can explore the
+    signing area before drawing, then explicitly turn capture on and off.
+  </p>
+
+  <p><strong>Privacy:</strong> Your signature is processed entirely on your device.
+    Nothing you draw is uploaded or transmitted anywhere.</p>
+
+  <p id="instructions">
+    <strong>Touchpad:</strong> Explore the signing area without drawing. Press Space to turn
+    capture on, move your finger to draw without clicking or pressing down, then press Space
+    again to turn capture off. <strong>Touchscreen or stylus:</strong> turn capture on, then
+    draw while touching the signing area. Escape always turns capture off.
+  </p>
+
+  <div id="status">
+    Explore mode. Signature area is blank.
+  </div>
+
+  <!-- Dedicated assertive live region for immediate screen-reader feedback. -->
+  <div id="announcer" role="alert" aria-live="assertive" aria-atomic="true"
+       style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;"></div>
+
+  <canvas id="signature" width="1200" height="630"
+    tabindex="0"
+    role="img"
+    aria-label="Signature drawing area. Explore mode. Signature area is blank."
+    aria-describedby="instructions"></canvas>
+
+  <div class="controls">
+    <button id="toggle" type="button" aria-pressed="false">Turn Capture On</button>
+    <button id="clear" type="button">Clear Signature</button>
+    <button id="save" type="button">Save PNG</button>
+    <button id="saveJpg" type="button">Save JPG</button>
+    <button id="saveGif" type="button">Save GIF</button>
+  </div>
+
+  <div class="help">
+    <p><strong>Keyboard:</strong> Space toggles capture. Escape stops capture. Alt+C clears. Alt+S saves.</p>
+    <p><strong>Laptop touchpad:</strong> In Capture mode, simply move your finger. You do not need to click or press the touchpad down. When capture is turned off, the status will say “Signature detected” if drawing was recorded.</p>
+    <p>All saved images are automatically cropped around the ink with a small margin. PNG and GIF use a transparent background. JPG uses a white background because JPEG does not support transparency.</p>
+  </div>
+</main>
+
+<script>
+(() => {
+  const canvas = document.getElementById('signature');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const status = document.getElementById('status');
+  const announcer = document.getElementById('announcer');
+  const toggle = document.getElementById('toggle');
+  const clearButton = document.getElementById('clear');
+  const saveButton = document.getElementById('save');
+  const saveJpgButton = document.getElementById('saveJpg');
+  const saveGifButton = document.getElementById('saveGif');
+
+  let capture = false;
+  let drawing = false;
+  let hasInk = false;
+  let lastPoint = null;
+  let lastBoundaryState = null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 5;
+
+  function inkDescription() {
+    return hasInk ? 'Signature detected.' : 'Signature area is blank.';
+  }
+
+  function updateLabel() {
+    canvas.setAttribute(
+      'aria-label',
+      `Signature drawing area. ${capture ? 'Capture on.' : 'Explore mode.'} ${inkDescription()}`
+    );
+  }
+
+  function announce(message) {
+    // Keep a visible status for sighted helpers while sending the same message
+    // through a dedicated assertive alert region. Clearing first helps ensure
+    // repeated messages such as "On signature area" are announced again.
+    status.textContent = message;
+    announcer.textContent = '';
+    requestAnimationFrame(() => {
+      announcer.textContent = message;
+    });
+    updateLabel();
+  }
+
+  function setCapture(on) {
+    capture = on;
+    drawing = false;
+    lastPoint = null;
+    toggle.setAttribute('aria-pressed', String(on));
+    toggle.textContent = on ? 'Turn Capture Off' : 'Turn Capture On';
+    announce(`${on ? 'Capture on.' : 'Capture off.'} ${inkDescription()}`);
+  }
+
+  function canvasPoint(clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - r.left) * canvas.width / r.width,
+      y: (clientY - r.top) * canvas.height / r.height,
+      inside: clientX >= r.left && clientX <= r.right &&
+              clientY >= r.top && clientY <= r.bottom
+    };
+  }
+
+  function recordBounds(p) {
+    const radius = ctx.lineWidth / 2;
+    minX = Math.min(minX, p.x - radius);
+    minY = Math.min(minY, p.y - radius);
+    maxX = Math.max(maxX, p.x + radius);
+    maxY = Math.max(maxY, p.y + radius);
+  }
+
+  function drawDot(p) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+    recordBounds(p);
+    hasInk = true;
+    updateLabel();
+  }
+
+  function drawLine(a, b) {
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    recordBounds(a);
+    recordBounds(b);
+    hasInk = true;
+    updateLabel();
+  }
+
+  function boundaryFeedback(inside) {
+    if (inside !== lastBoundaryState) {
+      lastBoundaryState = inside;
+      announce(inside ? 'On signature area.' : 'Outside signature area.');
+    }
+  }
+
+  canvas.addEventListener('focus', () => {
+    announce(`Signature area. ${capture ? 'Capture on.' : 'Explore mode.'} ${inkDescription()}`);
+  });
+
+  canvas.addEventListener('blur', () => {
+    if (!capture) {
+      lastBoundaryState = false;
+      announce('Outside signature area.');
+    }
+  });
+
+  // Pointer events cover mouse, pen, and touch in modern browsers.
+  canvas.addEventListener('pointerenter', e => {
+    if (!capture) boundaryFeedback(true);
+  });
+
+  canvas.addEventListener('pointerleave', e => {
+    if (!capture) boundaryFeedback(false);
+    drawing = false;
+    lastPoint = null;
+  });
+
+  canvas.addEventListener('pointerdown', e => {
+    const p = canvasPoint(e.clientX, e.clientY);
+    if (!capture) {
+      boundaryFeedback(p.inside);
+      return;
+    }
+    e.preventDefault();
+    canvas.setPointerCapture?.(e.pointerId);
+    drawing = true;
+    lastPoint = p;
+    drawDot(p);
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    const p = canvasPoint(e.clientX, e.clientY);
+
+    if (!capture) {
+      boundaryFeedback(p.inside);
+      return;
+    }
+
+    // In capture mode, mouse/touchpad pointer movement itself draws.
+    // This lets a user press Space, move a finger on a laptop touchpad,
+    // then press Space again without holding down a mouse button.
+    if (e.pointerType === 'mouse') {
+      e.preventDefault();
+      if (!lastPoint) {
+        lastPoint = p;
+        drawDot(p);
+      } else if (p.inside) {
+        drawLine(lastPoint, p);
+        lastPoint = p;
+      } else {
+        lastPoint = null;
+      }
+      return;
+    }
+
+    // Touchscreens and pens retain normal contact-to-draw behavior.
+    if (!drawing) return;
+    e.preventDefault();
+
+    if (p.inside && lastPoint) {
+      drawLine(lastPoint, p);
+      lastPoint = p;
+    } else {
+      drawing = false;
+      lastPoint = null;
+    }
+  });
+
+  function endStroke(e) {
+    if (drawing) e.preventDefault();
+    drawing = false;
+    lastPoint = null;
+    try { canvas.releasePointerCapture?.(e.pointerId); } catch (_) {}
+  }
+  canvas.addEventListener('pointerup', endStroke);
+  canvas.addEventListener('pointercancel', endStroke);
+
+  toggle.addEventListener('click', () => setCapture(!capture));
+
+  clearButton.addEventListener('click', () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hasInk = false;
+    drawing = false;
+    lastPoint = null;
+    minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+    announce('Signature cleared. Signature area is blank.');
+  });
+
+  function makeCroppedCanvas(whiteBackground = false) {
+    if (!hasInk || !isFinite(minX)) return null;
+
+    const margin = 18;
+    const sx = Math.max(0, Math.floor(minX - margin));
+    const sy = Math.max(0, Math.floor(minY - margin));
+    const ex = Math.min(canvas.width, Math.ceil(maxX + margin));
+    const ey = Math.min(canvas.height, Math.ceil(maxY + margin));
+    const w = Math.max(1, ex - sx);
+    const h = Math.max(1, ey - sy);
+
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const outCtx = out.getContext('2d');
+
+    if (whiteBackground) {
+      outCtx.fillStyle = '#fff';
+      outCtx.fillRect(0, 0, w, h);
+    }
+    outCtx.drawImage(canvas, sx, sy, w, h, 0, 0, w, h);
+    return { out, w, h };
+  }
+
+  function downloadBlob(blob, filename, w, h) {
+    if (!blob) {
+      announce(`Could not create ${filename}.`);
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    announce(`Signature saved as ${filename}. Cropped image size ${w} by ${h} pixels.`);
+  }
+
+  function saveSignature(format = 'png') {
+    if (!hasInk || !isFinite(minX)) {
+      announce('Nothing to save. Signature area is blank.');
+      return;
+    }
+
+    const white = format === 'jpg';
+    const cropped = makeCroppedCanvas(white);
+    if (!cropped) return;
+    const { out, w, h } = cropped;
+
+    if (format === 'jpg') {
+      out.toBlob(blob => downloadBlob(blob, 'signature.jpg', w, h), 'image/jpeg', 0.95);
+      return;
+    }
+
+    if (format === 'png') {
+      out.toBlob(blob => downloadBlob(blob, 'signature.png', w, h), 'image/png');
+      return;
+    }
+
+    // Browsers generally cannot encode GIF directly from canvas. Create a
+    // standards-compliant single-frame GIF with transparency from the cropped
+    // black/transparent signature using a compact in-page encoder.
+    const image = out.getContext('2d').getImageData(0, 0, w, h);
+    const pixels = new Uint8Array(w * h);
+    for (let i = 0; i < pixels.length; i++) {
+      pixels[i] = image.data[i * 4 + 3] > 0 ? 1 : 0;
+    }
+
+    function u16(n) { return [n & 255, (n >> 8) & 255]; }
+    const bytes = [];
+    const push = (...a) => bytes.push(...a);
+
+    push(...[71,73,70,56,57,97]); // GIF89a
+    push(...u16(w), ...u16(h));
+    push(0xF0, 0x00, 0x00);       // global color table, 2 colors
+    push(255,255,255, 0,0,0);     // index 0 transparent/white, index 1 black
+
+    // Graphic Control Extension: transparency index 0.
+    push(0x21,0xF9,0x04,0x01,0x00,0x00,0x00,0x00);
+
+    // Image descriptor.
+    push(0x2C,0,0,0,0,...u16(w),...u16(h),0);
+
+    // LZW encode 1-bit indices. Clear code frequently to keep code size fixed
+    // at 3 bits; this is simple and reliable for a small signature image.
+    const minCodeSize = 2;
+    const clear = 1 << minCodeSize; // 4
+    const eoi = clear + 1;           // 5
+    const codes = [];
+    for (let i = 0; i < pixels.length; i++) {
+      codes.push(clear, pixels[i]);
+    }
+    codes.push(clear, eoi);
+
+    const packed = [];
+    let cur = 0, bits = 0;
+    for (const code of codes) {
+      cur |= code << bits;
+      bits += 3;
+      while (bits >= 8) {
+        packed.push(cur & 255);
+        cur >>= 8;
+        bits -= 8;
+      }
+    }
+    if (bits) packed.push(cur & 255);
+
+    push(minCodeSize);
+    for (let i = 0; i < packed.length; i += 255) {
+      const block = packed.slice(i, i + 255);
+      push(block.length, ...block);
+    }
+    push(0x00, 0x3B);
+
+    const blob = new Blob([new Uint8Array(bytes)], { type: 'image/gif' });
+    downloadBlob(blob, 'signature.gif', w, h);
+  }
+
+  saveButton.addEventListener('click', () => saveSignature('png'));
+  saveJpgButton.addEventListener('click', () => saveSignature('jpg'));
+  saveGifButton.addEventListener('click', () => saveSignature('gif'));
+
+  // Global shortcuts. Do not hijack Space while an ordinary button is focused:
+  // Enter/Space should continue to activate buttons normally.
+  document.addEventListener('keydown', e => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    const interactive = tag === 'button' || tag === 'input' || tag === 'select' ||
+                        tag === 'textarea' || e.target.isContentEditable;
+
+    if (e.key === 'Escape') {
+      if (capture) {
+        e.preventDefault();
+        setCapture(false);
+      }
+      return;
+    }
+
+    if (e.altKey && e.key.toLowerCase() === 'c') {
+      e.preventDefault();
+      clearButton.click();
+      return;
+    }
+
+    if (e.altKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      saveSignature('png');
+      return;
+    }
+
+    if (e.code === 'Space' && !interactive) {
+      e.preventDefault();
+      setCapture(!capture);
+    }
+  });
+
+  updateLabel();
+})();
+</script>
+</body>
+</html>
