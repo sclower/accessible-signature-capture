@@ -48,25 +48,6 @@ As with any downloaded signature image, the resulting file itself should be trea
 
 There is nothing to install. Download `index.html` and open it in a web browser.
 
-## Publishing with GitHub Pages
-
-1. Create a GitHub repository, for example `accessible-signature-capture`.
-2. Put `index.html` and `README.md` in the repository root.
-3. Open the repository's **Settings**.
-4. Select **Pages**.
-5. Under **Build and deployment**, choose **Deploy from a branch**.
-6. Select the `main` branch and `/(root)`, then save.
-
-The resulting project site will normally be available at:
-
-`https://YOUR-USERNAME.github.io/accessible-signature-capture/`
-
-## Technical Notes
-
-The project uses standard HTML, CSS, JavaScript, Canvas, Pointer Events, and ARIA live-region feedback. It has no external runtime dependencies.
-
-The drawing canvas is automatically cropped to the detected ink before export so the resulting signature file does not contain excessive whitespace.
-
 ## Accessibility Feedback
 
 Screen-reader, browser, touchscreen, touchpad, and stylus combinations can behave differently. Accessibility bug reports and improvements are welcome.
